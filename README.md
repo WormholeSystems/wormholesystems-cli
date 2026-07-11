@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/WormholeSystems/wormholesystems-cli)](https://github.com/WormholeSystems/wormholesystems-cli/releases/latest)
 [![License](https://img.shields.io/github/license/WormholeSystems/wormholesystems-cli)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-wormholesystems--containers-blue)](https://github.com/WormholeSystems/wormholesystems-containers)
-[![App](https://img.shields.io/badge/app-wormhole--systems-blue)](https://github.com/WormholeSystems/wormhole-systems)
+[![App](https://img.shields.io/badge/app-WormholeSystems-blue)](https://github.com/WormholeSystems/WormholeSystems)
 
 One tool to set up and manage a self-hosted [Wormhole Systems](https://wormhole.systems) instance. It automates the entire [container stack](https://github.com/WormholeSystems/wormholesystems-containers) setup — cloning, configuration, secrets, docker build, database initialization — through an interactive wizard, and keeps the instance's EVE data updated afterwards.
 
@@ -59,7 +59,7 @@ wsctl about    # version and project links
 | Repository | What it is |
 |---|---|
 | [wormholesystems-containers](https://github.com/WormholeSystems/wormholesystems-containers) | The docker stack this tool sets up (Traefik, frankenPHP, MySQL, Redis, Reverb) |
-| [wormhole-systems](https://github.com/WormholeSystems/wormhole-systems) | The Laravel application itself |
+| [WormholeSystems](https://github.com/WormholeSystems/WormholeSystems) | The Laravel application itself |
 
 ## Development
 
