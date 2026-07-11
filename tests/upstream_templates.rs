@@ -176,6 +176,35 @@ fn force_https_is_environment_guarded_upstream() {
     }
 }
 
+/// The wizard writes .env and dockerfiles/mysql/.env; compose must still
+/// read the container environment from exactly those paths.
+#[test]
+fn compose_env_file_paths_match_what_the_wizard_writes() {
+    for compose in ["docker-compose.prod.yml", "docker-compose.test.yml"] {
+        let content = fixture(compose);
+        let referenced: Vec<&str> = content
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("- ") && l.contains(".env"))
+            .map(|l| l.trim_start_matches("- ").trim())
+            .collect();
+        assert!(
+            referenced.contains(&".env"),
+            "{compose} no longer reads .env from the repo root"
+        );
+        assert!(
+            referenced.contains(&"dockerfiles/mysql/.env"),
+            "{compose} no longer reads dockerfiles/mysql/.env"
+        );
+        for path in referenced {
+            assert!(
+                [".env", "dockerfiles/mysql/.env"].contains(&path),
+                "{compose} reads an env file the wizard does not write: {path}"
+            );
+        }
+    }
+}
+
 #[test]
 fn compose_files_still_define_expected_services() {
     let prod = fixture("docker-compose.prod.yml");
