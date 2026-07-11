@@ -1,0 +1,22 @@
+#!/usr/bin/expect -f
+# Drives the setup wizard end-to-end against a scratch copy of the repo
+# templates without touching docker. Usage:
+#   ./scripts/e2e.exp <path-to-repo-copy>
+# Answers the production flow with dummy values and declines the
+# build/start step, then the generated .env files can be inspected.
+set timeout 15
+spawn cargo run --quiet -- setup --dir [lindex $argv 0]
+expect "Which setup" ; send "\r"
+expect "Main domain" ; send "example.com\r"
+expect "WebSocket domain" ; send "\r"
+expect "certificate notifications" ; send "admin@example.com\r"
+expect "Contact email" ; send "me@example.com\r"
+expect "character name" ; send "My Character\r"
+expect "EVE Client ID" ; send "clientid1234\r"
+expect "EVE Client Secret" ; send "supersecret\r"
+expect "Restrict logins" ; send "\r"
+expect "Database name" ; send "\r"
+expect "Database user" ; send "\r"
+expect "Generate the database passwords" ; send "\r"
+expect "start the stack now" ; send "n\r"
+expect eof

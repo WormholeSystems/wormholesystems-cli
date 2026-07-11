@@ -1,0 +1,48 @@
+# Visit https://soloterm.com to learn more
+name: wormholesystems-cli
+icon: null
+processes:
+  # The real end-user flow: the wizard offers to clone the containers
+  # repo into a directory you choose (e.g. /tmp), then runs the full
+  # setup there — env generation, docker build, init. Delete the clone
+  # afterwards to test again from scratch.
+  Wizard:
+    command: cargo run -- setup
+    auto_start: false
+    auto_restart: false
+
+  # Same dry run, but fully scripted (expect answers all prompts).
+  E2E (scripted):
+    command: >-
+      sh -c 'rm -rf /tmp/ws-setup-test
+      && mkdir -p /tmp/ws-setup-test/dockerfiles/mysql
+      && cp upstream/wormholesystems-containers/.env.local.example
+      upstream/wormholesystems-containers/.env.production.example
+      upstream/wormholesystems-containers/docker-compose*.yml
+      /tmp/ws-setup-test/
+      && cp upstream/wormholesystems-containers/dockerfiles/mysql/.env.example
+      /tmp/ws-setup-test/dockerfiles/mysql/
+      && ./scripts/e2e.exp /tmp/ws-setup-test
+      && echo && echo "=== generated .env ===" && cat /tmp/ws-setup-test/.env'
+    auto_start: false
+    auto_restart: false
+
+  # Unit + upstream-template drift tests; reruns on source changes.
+  Tests:
+    command: cargo test
+    auto_start: true
+    auto_restart: false
+    restart_when_changed:
+      - src/**/*.rs
+      - tests/**/*.rs
+      - Cargo.toml
+
+  Lint:
+    command: sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings'
+    auto_start: false
+    auto_restart: false
+
+  Doctor:
+    command: cargo run -- doctor
+    auto_start: false
+    auto_restart: false

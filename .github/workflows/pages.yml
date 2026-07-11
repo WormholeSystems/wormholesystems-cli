@@ -1,0 +1,29 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: [install.sh, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The root document IS the script, so `curl https://install.wormhole.systems | sh` works.
+      - run: |
+          mkdir _site
+          cp install.sh _site/index.html
+          cp install.sh _site/install.sh
+      - uses: actions/upload-pages-artifact@v3
+      - id: deployment
+        uses: actions/deploy-pages@v4

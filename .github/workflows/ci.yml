@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly run against the latest upstream templates to catch drift
+    # even when this repo is idle.
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # The drift check should test against upstream HEAD, not just the
+      # pinned submodule commit.
+      - name: Update submodule to upstream HEAD
+        if: github.event_name == 'schedule'
+        run: |
+          git submodule update --remote upstream/wormholesystems-containers
+          git -C upstream/wormholesystems-containers submodule update --init wormhole-systems
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test

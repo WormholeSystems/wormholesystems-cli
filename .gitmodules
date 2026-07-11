@@ -1,0 +1,3 @@
+[submodule "upstream/wormholesystems-containers"]
+	path = upstream/wormholesystems-containers
+	url = https://github.com/WormholeSystems/wormholesystems-containers.git
