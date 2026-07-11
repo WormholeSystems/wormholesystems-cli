@@ -191,27 +191,31 @@ pub fn build_files(mode: Mode, a: &Answers, env_template: &str) -> Vec<PlannedFi
     files
 }
 
+fn compose_action(files: &[String], tail: &[&str]) -> Action {
+    let mut args = vec!["compose".to_string()];
+    for file in files {
+        args.push("-f".to_string());
+        args.push(file.clone());
+    }
+    args.extend(tail.iter().map(|s| s.to_string()));
+    Action::Command {
+        program: "docker".to_string(),
+        args,
+    }
+}
+
+fn artisan_action(files: &[String], tail: &[&str]) -> Action {
+    let mut args = vec!["exec", "app", "php", "artisan"];
+    args.extend_from_slice(tail);
+    compose_action(files, &args)
+}
+
 /// Takes only mode and ports so a resumed run can rebuild the step list
 /// from persisted state without re-asking anything.
 pub fn build_steps(mode: Mode, app_port: u16, reverb_port: u16) -> Vec<Step> {
     let files = compose_files(mode, app_port, reverb_port);
-    let compose = |tail: &[&str]| {
-        let mut args = vec!["compose".to_string()];
-        for file in &files {
-            args.push("-f".to_string());
-            args.push(file.clone());
-        }
-        args.extend(tail.iter().map(|s| s.to_string()));
-        Action::Command {
-            program: "docker".to_string(),
-            args,
-        }
-    };
-    let artisan = |tail: &[&str]| {
-        let mut args = vec!["exec", "app", "php", "artisan"];
-        args.extend_from_slice(tail);
-        compose(&args)
-    };
+    let compose = |tail: &[&str]| compose_action(&files, tail);
+    let artisan = |tail: &[&str]| artisan_action(&files, tail);
 
     let mut steps = Vec::new();
     if mode == Mode::Production {
@@ -247,6 +251,28 @@ pub fn build_steps(mode: Mode, app_port: u16, reverb_port: u16) -> Vec<Step> {
         actions: vec![artisan(&["optimize:clear"]), artisan(&["optimize"])],
     });
     steps
+}
+
+/// The game-data update sequence from the upstream README. Custom port
+/// mappings are irrelevant for `exec`, so default ports suffice.
+pub fn update_actions(mode: Mode) -> Vec<Action> {
+    let files = compose_files(mode, 80, 8080);
+    vec![
+        artisan_action(&files, &["sde:download"]),
+        artisan_action(&files, &["migrate", "--force"]),
+        artisan_action(&files, &["sde:seed"]),
+    ]
+}
+
+/// Which stack a configured repo runs, read from its .env.
+pub fn mode_from_env(env: &str) -> Option<Mode> {
+    env.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("APP_ENV=")?;
+        Some(match value.trim().trim_matches('"') {
+            "local" | "testing" => Mode::Local,
+            _ => Mode::Production,
+        })
+    })
 }
 
 /// Host ports the stack will bind.
@@ -338,6 +364,47 @@ mod tests {
         assert!(matches!(steps[0].actions[0], Action::EnsureWebNetwork));
         let build = steps.iter().find(|s| s.id == "build").unwrap();
         assert_eq!(command_args(&build.actions[0]), &["compose", "build"]);
+    }
+
+    #[test]
+    fn update_actions_follow_upstream_readme_sequence() {
+        let actions = update_actions(Mode::Local);
+        let commands: Vec<_> = actions.iter().map(command_args).collect();
+        assert_eq!(commands.len(), 3);
+        let base = [
+            "compose",
+            "-f",
+            "docker-compose.test.yml",
+            "exec",
+            "app",
+            "php",
+            "artisan",
+        ];
+        for (action, tail) in commands.iter().zip([
+            &["sde:download"][..],
+            &["migrate", "--force"],
+            &["sde:seed"],
+        ]) {
+            let expected: Vec<&str> = base.iter().chain(tail).copied().collect();
+            assert_eq!(action, &expected);
+        }
+        assert_eq!(
+            command_args(&update_actions(Mode::Production)[0]),
+            &["compose", "exec", "app", "php", "artisan", "sde:download"]
+        );
+    }
+
+    #[test]
+    fn mode_is_detected_from_app_env() {
+        assert!(matches!(
+            mode_from_env("APP_ENV=local\n"),
+            Some(Mode::Local)
+        ));
+        assert!(matches!(
+            mode_from_env("APP_NAME=x\nAPP_ENV=production\n"),
+            Some(Mode::Production)
+        ));
+        assert!(mode_from_env("APP_NAME=x\n").is_none());
     }
 
     #[test]

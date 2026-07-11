@@ -14,8 +14,11 @@ Interactive setup wizard for the [Wormhole Systems container stack](https://gith
 ```bash
 cargo run                 # wizard; uses cwd if it's the containers repo, else offers to clone
 cargo run -- setup --dir /path/to/wormholesystems-containers
+cargo run -- update       # refresh EVE static data of a running instance (cwd or --dir)
 cargo run -- doctor       # check git / docker / docker compose are available
 ```
+
+`wsctl update` verifies it's in a configured checkout, detects the stack from `APP_ENV`, checks the `app`/`mysql` containers are running, then runs the upstream update sequence (`sde:download`, `migrate --force`, `sde:seed`).
 
 Production mode drives the full Traefik+SSL flow. Local test mode runs against `docker-compose.test.yml` directly (no include editing) and, when ports 80/8080 are taken, remaps them via a generated `docker-compose.wsctl-ports.yml` override — the chosen ports flow into `APP_URL`, the EVE callback guidance, and the websocket client config.
 

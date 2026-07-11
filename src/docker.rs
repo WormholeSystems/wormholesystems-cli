@@ -48,6 +48,32 @@ pub fn ensure_web_network(dir: &Path) -> Result<()> {
     run(dir, "docker", &["network", "create", "-d", "bridge", "web"])
 }
 
+pub fn running_services(dir: &Path, files: &[String]) -> Result<Vec<String>> {
+    let mut args = vec!["compose".to_string()];
+    for file in files {
+        args.push("-f".to_string());
+        args.push(file.clone());
+    }
+    args.extend(["ps", "--status", "running", "--services"].map(String::from));
+    let out = Command::new("docker")
+        .args(&args)
+        .current_dir(dir)
+        .output()
+        .context("failed to run docker")?;
+    if !out.status.success() {
+        bail!(
+            "`docker compose ps` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
 /// Missing tools are an error; a stopped daemon is not (config files can
 /// still be generated without it), so that is returned as a bool.
 pub fn doctor() -> Result<bool> {

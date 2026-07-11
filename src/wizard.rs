@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use console::style;
 use inquire::{Confirm, CustomType, Password, PasswordDisplayMode, Select, Text};
 
-use crate::exec::{RealRunner, run_steps};
+use crate::exec::{RealRunner, Runner, run_steps};
 use crate::plan::{self, Answers, Mode, Step, StepGroup};
 use crate::state::ResumeState;
 use crate::{docker, secrets};
@@ -109,6 +109,62 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
             &compose_files,
         );
     }
+    Ok(())
+}
+
+/// Refreshes the EVE static data of a running instance (SDE download,
+/// migrations, SDE seed), per the upstream README's update sequence.
+pub fn update(dir: Option<PathBuf>) -> Result<()> {
+    let repo = dir.unwrap_or(std::env::current_dir()?);
+    if !looks_like_repo(&repo) {
+        bail!(
+            "{} is not a wormholesystems-containers checkout — run `wsctl update` \
+             inside one or pass --dir",
+            repo.display()
+        );
+    }
+
+    let env =
+        fs::read_to_string(repo.join(".env")).context("no .env found — run `wsctl setup` first")?;
+    let mode =
+        plan::mode_from_env(&env).context(".env has no APP_ENV — run `wsctl setup` first")?;
+
+    if !docker::daemon_running() {
+        bail!("the docker daemon is not running — start Docker first");
+    }
+
+    let files = plan::compose_files(mode, 80, 8080);
+    let compose_hint = std::iter::once("docker compose".to_string())
+        .chain(files.iter().map(|f| format!("-f {f}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let running = docker::running_services(&repo, &files)?;
+    for service in ["app", "mysql"] {
+        if !running.iter().any(|s| s == service) {
+            bail!(
+                "service `{service}` is not running — start the stack with `{compose_hint} up -d` first"
+            );
+        }
+    }
+
+    println!(
+        "Updating EVE static data ({} stack, this downloads ~500MB and takes a while)...\n",
+        match mode {
+            Mode::Production => "production",
+            Mode::Local => "local test",
+        }
+    );
+    let mut runner = RealRunner;
+    for action in plan::update_actions(mode) {
+        match action {
+            plan::Action::Command { program, args } => runner.run(&repo, &program, &args)?,
+            plan::Action::EnsureWebNetwork => {}
+        }
+    }
+    println!(
+        "\n{} EVE static data is up to date.",
+        style("✓").green().bold()
+    );
     Ok(())
 }
 

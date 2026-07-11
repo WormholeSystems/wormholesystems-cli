@@ -23,6 +23,12 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Update a running instance's EVE static data (SDE) and migrations
+    Update {
+        /// Path to the wormholesystems-containers checkout (default: cwd)
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Check that git, docker and docker compose are available
     Doctor,
 }
@@ -31,6 +37,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Setup { dir: None }) {
         Command::Setup { dir } => wizard::run(dir),
+        Command::Update { dir } => wizard::update(dir),
         Command::Doctor => {
             if !docker::doctor()? {
                 anyhow::bail!("the docker daemon is not running — start Docker and try again");
