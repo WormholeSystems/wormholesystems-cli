@@ -13,7 +13,10 @@ anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 console = "0.15"
-inquire = "0.7"
+# console backend instead of crossterm: macOS kqueue cannot poll a /dev/tty
+# fd (e.g. when install.sh redirects stdin), which breaks crossterm's event
+# reader; console uses plain blocking reads.
+inquire = { version = "0.7", default-features = false, features = ["console"] }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

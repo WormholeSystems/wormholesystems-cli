@@ -1,6 +1,6 @@
 #!/bin/sh
 # One-line installer for the Wormhole Systems setup wizard:
-#   curl -fsSL https://install.wormhole.systems | sh
+#   curl --proto '=https' --tlsv1.2 -sSf https://install.wormhole.systems | sh
 # Pin a version with WSCTL_VERSION=v0.1.0.
 set -eu
 

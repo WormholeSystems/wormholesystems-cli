@@ -55,7 +55,7 @@ Binaries are not committed to git. Tagging `v*` builds `wsctl` for Linux/macOS (
 One-line install (downloads the release binary for the platform, then offers to run the wizard):
 
 ```bash
-curl -fsSL https://install.wormhole.systems | sh
+curl --proto '=https' --tlsv1.2 -sSf https://install.wormhole.systems | sh
 ```
 
 Pin a version with `WSCTL_VERSION=v0.1.0 curl ... | sh`. The script installs to `/usr/local/bin` (or `~/.local/bin`) and reattaches the wizard to `/dev/tty` since stdin is the curl pipe. The raw GitHub URL works too: `https://raw.githubusercontent.com/WormholeSystems/wormholesystems-cli/main/install.sh`.
