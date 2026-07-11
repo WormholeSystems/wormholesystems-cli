@@ -12,10 +12,12 @@ Interactive setup wizard for the [Wormhole Systems container stack](https://gith
 ## Usage
 
 ```bash
-cargo run                 # wizard; uses cwd if it's the containers repo, else offers to clone
-cargo run -- setup --dir /path/to/wormholesystems-containers
-cargo run -- update       # refresh EVE static data of a running instance (cwd or --dir)
-cargo run -- doctor       # check git / docker / docker compose are available
+wsctl                     # version info and command list
+wsctl setup               # wizard (alias: init); uses cwd if it's the containers repo, else offers to clone
+wsctl setup --dir /path/to/wormholesystems-containers
+wsctl update              # refresh EVE static data of a running instance (cwd or --dir)
+wsctl doctor              # check git / docker / docker compose are available
+wsctl about               # version and project links
 ```
 
 `wsctl update` verifies it's in a configured checkout, detects the stack from `APP_ENV`, checks the `app`/`mysql` containers are running, then runs the upstream update sequence (`sde:download`, `migrate --force`, `sde:seed`).
