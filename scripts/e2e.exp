@@ -4,13 +4,21 @@
 #   ./scripts/e2e.exp <path-to-repo-copy>
 # Answers the production flow with dummy values and declines the
 # build/start step, then the generated .env files can be inspected.
-set timeout 15
+set timeout 30
 spawn cargo run --quiet -- setup --dir [lindex $argv 0]
 expect "Which setup" ; send "\r"
 expect "Main domain" ; send "example.com\r"
 expect "WebSocket domain" ; send "\r"
 expect "certificate notifications" ; send "admin@example.com\r"
-expect "Contact email" ; send "me@example.com\r"
+# DNS gate: example.com does not point here, so pick "Continue anyway"
+# (second option); without internet the gate prints and moves on.
+expect {
+    "How do you want to proceed" {
+        send "\033\[B\r"
+        expect "Contact email" ; send "me@example.com\r"
+    }
+    "Contact email" { send "me@example.com\r" }
+}
 expect "character name" ; send "My Character\r"
 expect "EVE Client ID" ; send "clientid1234\r"
 expect "EVE Client Secret" ; send "supersecret\r"

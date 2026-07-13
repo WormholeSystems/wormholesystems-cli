@@ -45,6 +45,18 @@ impl EsiScope {
     pub fn php_case(self) -> String {
         format!("{self:?}")
     }
+
+    /// What the app uses this scope for — shown next to the scope name
+    /// so users know why each permission is requested.
+    pub fn purpose(self) -> &'static str {
+        match self {
+            EsiScope::PublicData => "basic character identity for login",
+            EsiScope::ReadLocations => "track pilots' positions on the map",
+            EsiScope::ReadShip => "show which ship a pilot is flying",
+            EsiScope::ReadOnlineStatus => "show who is currently online",
+            EsiScope::WriteWaypoint => "set in-game autopilot waypoints from the map",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]

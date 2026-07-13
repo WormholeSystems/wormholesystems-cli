@@ -29,6 +29,13 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Show this machine's public IP, the DNS records the app needs and
+    /// where the configured domains currently point
+    Dns {
+        /// Path to the wormholesystems-containers checkout (default: cwd)
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Check that git, docker and docker compose are available
     Doctor,
     /// Show version and project links
@@ -44,6 +51,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Setup { dir }) => wizard::run(dir),
         Some(Command::Update { dir }) => wizard::update(dir),
+        Some(Command::Dns { dir }) => wizard::dns(dir),
         Some(Command::Doctor) => {
             if !docker::doctor()? {
                 anyhow::bail!("the docker daemon is not running — start Docker and try again");
@@ -67,6 +75,7 @@ fn print_info() {
     for (name, description) in [
         ("setup", "run the interactive setup wizard (alias: init)"),
         ("update", "refresh EVE static data of a running instance"),
+        ("dns", "show the public IP and required DNS records"),
         ("doctor", "check git, docker and docker compose"),
         ("about", "show version and project links"),
     ] {

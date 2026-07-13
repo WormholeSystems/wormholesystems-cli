@@ -25,6 +25,14 @@ pub fn patch(template: &str, values: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// The value of a `KEY=...` line, surrounding quotes removed.
+pub fn value(env: &str, key: &str) -> Option<String> {
+    env.lines().find_map(|line| {
+        let (k, v) = line.trim_start().split_once('=')?;
+        (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+    })
+}
+
 fn line_key(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     if trimmed.starts_with('#') {
@@ -77,6 +85,14 @@ mod tests {
         );
         assert!(out.contains("CONTACT_EMAIL=\"me@x.y | Me\"\n"));
         assert!(out.contains("# Added by wsctl\nNEW_KEY=1\n"));
+    }
+
+    #[test]
+    fn value_reads_plain_and_quoted_entries() {
+        let env = "# comment\nAPP_DOMAIN=example.com\nWS_DOMAIN=\"ws.example.com\"\n";
+        assert_eq!(value(env, "APP_DOMAIN").as_deref(), Some("example.com"));
+        assert_eq!(value(env, "WS_DOMAIN").as_deref(), Some("ws.example.com"));
+        assert_eq!(value(env, "MISSING"), None);
     }
 
     #[test]

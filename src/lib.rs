@@ -1,6 +1,7 @@
 pub mod docker;
 pub mod envfile;
 pub mod exec;
+pub mod netinfo;
 pub mod plan;
 pub mod secrets;
 pub mod state;

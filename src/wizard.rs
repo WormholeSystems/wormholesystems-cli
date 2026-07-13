@@ -2,6 +2,7 @@
 //! write and run is decided in `plan`, executed via `exec`.
 
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -11,7 +12,7 @@ use inquire::{Confirm, CustomType, Password, PasswordDisplayMode, Select, Text};
 use crate::exec::{RealRunner, Runner, run_steps};
 use crate::plan::{self, Answers, Mode, Step, StepGroup};
 use crate::state::ResumeState;
-use crate::{docker, secrets};
+use crate::{docker, envfile, netinfo, secrets};
 
 const REPO_URL: &str = "https://github.com/WormholeSystems/wormholesystems-containers.git";
 
@@ -54,6 +55,10 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
             "Production (Traefik, automatic SSL certificates)",
             "Local test (no SSL, localhost)",
         ],
+    )
+    .with_help_message(
+        "production needs a server with a public IP, open ports 80/443 and a domain; \
+         local test runs entirely on this machine",
     )
     .prompt()?
     {
@@ -166,6 +171,146 @@ pub fn update(dir: Option<PathBuf>) -> Result<()> {
         style("✓").green().bold()
     );
     Ok(())
+}
+
+/// Shows this machine's public IP and the DNS records the configured
+/// instance needs, then verifies where the domains currently point.
+pub fn dns(dir: Option<PathBuf>) -> Result<()> {
+    let repo = dir.unwrap_or(std::env::current_dir()?);
+    let env = fs::read_to_string(repo.join(".env")).ok();
+
+    let domains = env.as_deref().and_then(|env| {
+        let app = envfile::value(env, "APP_DOMAIN")?;
+        let ws = envfile::value(env, "WS_DOMAIN")?;
+        Some((plan::mode_from_env(env), app, ws))
+    });
+
+    match domains {
+        Some((Some(plan::Mode::Local), _, _)) => {
+            println!("This is a local test setup — it runs on localhost and needs no DNS records.");
+        }
+        Some((_, app_domain, ws_domain)) => {
+            let public_ip = print_dns_records(&app_domain, &ws_domain);
+            if let Some(ip) = public_ip {
+                println!("\n{}", style("Current DNS status:").bold());
+                if check_domains(&app_domain, &ws_domain, ip) {
+                    println!(
+                        "\n{} both domains point to this server.",
+                        style("✓").green().bold()
+                    );
+                }
+            }
+        }
+        None => {
+            println!(
+                "No configured instance found here (missing .env) — run `wsctl dns` inside \
+                 a set-up wormholesystems-containers checkout or pass --dir.\n\
+                 Generic guidance for a production instance:"
+            );
+            print_dns_records("<your domain>", "ws.<your domain>");
+        }
+    }
+    Ok(())
+}
+
+/// Prints the public IP and the records to create; returns the IP so
+/// callers can verify against it (None if detection failed).
+fn print_dns_records(app_domain: &str, ws_domain: &str) -> Option<IpAddr> {
+    let public_ip = netinfo::public_ip();
+    match public_ip {
+        Some(ip) => println!("Public IP of this machine: {}", style(ip).cyan().bold()),
+        None => println!(
+            "{} could not detect this machine's public IP (offline?) — \
+             showing placeholders.",
+            style("Note:").yellow().bold()
+        ),
+    }
+
+    let record = match public_ip {
+        Some(IpAddr::V6(_)) => "AAAA",
+        _ => "A",
+    };
+    let target = public_ip
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "<public IP of this server>".to_string());
+    println!(
+        "\n{}",
+        style("Create these DNS records at your domain provider:").bold()
+    );
+    for domain in [app_domain, ws_domain] {
+        println!("  {record:<5} {domain:<28} →  {target}");
+    }
+    println!(
+        "\nWhy: Traefik proves to Let's Encrypt that you own the domains via an\n\
+         HTTP challenge. Both domains must resolve to this server and ports 80\n\
+         and 443 must be reachable from the internet — otherwise no SSL\n\
+         certificate is issued and the site stays unreachable."
+    );
+    public_ip
+}
+
+/// Prints one status line per domain; true when both point to `ip`.
+fn check_domains(app_domain: &str, ws_domain: &str, ip: IpAddr) -> bool {
+    let mut all_ok = true;
+    for domain in [app_domain, ws_domain] {
+        let resolved = netinfo::resolve(domain);
+        if resolved.contains(&ip) {
+            println!("  {} {domain} → {ip}", style("✓").green().bold());
+        } else if resolved.is_empty() {
+            println!(
+                "  {} {domain} does not resolve yet",
+                style("✗").red().bold()
+            );
+            all_ok = false;
+        } else {
+            let others = resolved
+                .iter()
+                .map(|ip| ip.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "  {} {domain} → {others} {}",
+                style("✗").red().bold(),
+                style("(not this server)").red()
+            );
+            all_ok = false;
+        }
+    }
+    all_ok
+}
+
+/// Interactive wrapper around the DNS guidance: lets the user fix the
+/// records and re-check, or continue while DNS still propagates.
+fn dns_gate(app_domain: &str, ws_domain: &str) -> Result<()> {
+    println!();
+    let Some(ip) = print_dns_records(app_domain, ws_domain) else {
+        return Ok(());
+    };
+
+    println!("\n{}", style("Checking where the domains point...").bold());
+    loop {
+        if check_domains(app_domain, ws_domain, ip) {
+            println!(
+                "{} both domains point to this server.\n",
+                style("✓").green().bold()
+            );
+            return Ok(());
+        }
+        let choice = Select::new(
+            "How do you want to proceed?",
+            vec![
+                "I have created/updated the records — check again",
+                "Continue anyway (Traefik retries certificates once DNS is correct)",
+            ],
+        )
+        .with_help_message("new DNS records can take a few minutes to propagate")
+        .prompt()?;
+        if choice.starts_with("Continue") {
+            println!();
+            return Ok(());
+        }
+        println!();
+    }
 }
 
 /// The config files are already on disk; only the remaining steps run.
@@ -470,13 +615,23 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         Mode::Production => {
             let app_domain = Text::new("Main domain (e.g. wormhole.systems):")
                 .with_validator(required)
+                .with_help_message("the address your users will open in the browser")
                 .prompt()?;
             let ws_domain = Text::new("WebSocket domain:")
                 .with_default(&format!("ws.{app_domain}"))
+                .with_help_message(
+                    "live map updates flow over a separate websocket server (Reverb), \
+                     which Traefik routes via its own subdomain",
+                )
                 .prompt()?;
             let acme_email = Text::new("Email for Let's Encrypt certificate notifications:")
                 .with_validator(required)
+                .with_help_message(
+                    "Let's Encrypt sends certificate expiry and problem notices here — \
+                     no account signup needed",
+                )
                 .prompt()?;
+            dns_gate(&app_domain, &ws_domain)?;
             (app_domain, ws_domain, acme_email)
         }
         Mode::Local => (
@@ -493,6 +648,7 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
     );
     let contact_mail = Text::new("Contact email:")
         .with_validator(required)
+        .with_help_message("sent to CCP with every EVE API request so they can reach you")
         .prompt()?;
     let contact_name = Text::new("Your EVE character name:")
         .with_validator(required)
@@ -501,7 +657,13 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
 
     let scope_list = plan::EsiScope::DEFAULTS
         .iter()
-        .map(|s| format!("      {}", s.as_str()))
+        .map(|s| {
+            format!(
+                "      {:<32} {}",
+                s.as_str(),
+                style(format!("— {}", s.purpose())).dim()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     println!(
@@ -531,6 +693,9 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         "Restrict logins to these EVE character/corp/alliance IDs (comma separated, empty = anyone):",
     )
     .with_default("")
+    .with_help_message(
+        "keeps your instance private to your corp/alliance — find IDs in zkillboard.com URLs",
+    )
     .prompt()?;
 
     println!();
