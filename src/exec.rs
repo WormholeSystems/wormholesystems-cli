@@ -12,7 +12,7 @@ use crate::state::ResumeState;
 
 pub trait Runner {
     fn run(&mut self, dir: &Path, program: &str, args: &[String]) -> Result<()>;
-    fn ensure_web_network(&mut self, dir: &Path) -> Result<()>;
+    fn ensure_network(&mut self, dir: &Path, name: &str) -> Result<()>;
 }
 
 pub struct RealRunner;
@@ -23,8 +23,8 @@ impl Runner for RealRunner {
         docker::run(dir, program, &args)
     }
 
-    fn ensure_web_network(&mut self, dir: &Path) -> Result<()> {
-        docker::ensure_web_network(dir)
+    fn ensure_network(&mut self, dir: &Path, name: &str) -> Result<()> {
+        docker::ensure_network(dir, name)
     }
 }
 
@@ -46,7 +46,7 @@ pub fn run_steps(
         }
         for action in &step.actions {
             match action {
-                Action::EnsureWebNetwork => runner.ensure_web_network(repo)?,
+                Action::EnsureNetwork { name } => runner.ensure_network(repo, name)?,
                 Action::Command { program, args } => runner.run(repo, program, args)?,
             }
         }
@@ -63,7 +63,7 @@ mod tests {
     #[derive(Default)]
     struct MockRunner {
         commands: Vec<String>,
-        networks_ensured: usize,
+        networks_ensured: Vec<String>,
     }
 
     impl Runner for MockRunner {
@@ -72,8 +72,8 @@ mod tests {
             Ok(())
         }
 
-        fn ensure_web_network(&mut self, _dir: &Path) -> Result<()> {
-            self.networks_ensured += 1;
+        fn ensure_network(&mut self, _dir: &Path, name: &str) -> Result<()> {
+            self.networks_ensured.push(name.to_string());
             Ok(())
         }
     }
@@ -82,6 +82,7 @@ mod tests {
         let answers = crate::plan::Answers {
             app_port: 80,
             reverb_port: 8080,
+            network: "web".into(),
             app_domain: "localhost".into(),
             ws_domain: "localhost:8080".into(),
             acme_email: String::new(),
@@ -106,7 +107,7 @@ mod tests {
     #[test]
     fn completed_steps_are_skipped_on_resume() {
         let dir = temp_repo("skip");
-        let steps = build_steps(Mode::Local, 80, 8080);
+        let steps = build_steps(Mode::Local, 80, 8080, "web");
         let stack: Vec<&_> = steps
             .iter()
             .filter(|s| s.group == StepGroup::Stack)
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn production_stack_ensures_network_once() {
         let dir = temp_repo("network");
-        let steps = build_steps(Mode::Production, 80, 8080);
+        let steps = build_steps(Mode::Production, 80, 8080, "corp-net");
         let stack: Vec<&_> = steps
             .iter()
             .filter(|s| s.group == StepGroup::Stack)
@@ -143,13 +144,14 @@ mod tests {
         let mut runner = MockRunner::default();
         run_steps(&mut runner, &dir, &stack, &mut state).unwrap();
 
-        assert_eq!(runner.networks_ensured, 1);
+        assert_eq!(runner.networks_ensured, vec!["corp-net"]);
+        let compose = "docker compose -f docker-compose.yml -f docker-compose.wsctl-network.yml";
         assert_eq!(
             runner.commands,
             vec![
-                "docker compose build",
-                "docker compose up -d",
-                "docker compose ps",
+                format!("{compose} build"),
+                format!("{compose} up -d"),
+                format!("{compose} ps"),
             ]
         );
         std::fs::remove_dir_all(&dir).ok();

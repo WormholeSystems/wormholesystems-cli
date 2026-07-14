@@ -23,6 +23,7 @@ fn answers() -> Answers {
     Answers {
         app_port: 80,
         reverb_port: 8080,
+        network: "web".into(),
         app_domain: "example.com".into(),
         ws_domain: "ws.example.com".into(),
         acme_email: "acme@example.com".into(),
@@ -212,6 +213,33 @@ fn compose_files_still_define_expected_services() {
         assert!(
             prod.contains(service),
             "docker-compose.prod.yml no longer defines service `{service}` the wizard relies on"
+        );
+    }
+}
+
+/// The wizard's network override file remaps exactly these keys: the
+/// external `web` network and the two `traefik.docker.network` labels.
+/// If upstream rewires them, the custom-network option silently breaks.
+#[test]
+fn prod_compose_still_wires_the_web_network_the_override_remaps() {
+    let prod = fixture("docker-compose.prod.yml");
+    assert_eq!(
+        prod.matches("traefik.docker.network=web").count(),
+        2,
+        "expected app and reverb to carry `traefik.docker.network=web` labels — \
+         update the wizard's network override file"
+    );
+    for compose in ["docker-compose.prod.yml", "docker-compose.traefik.yml"] {
+        let content = fixture(compose);
+        let has_external_web = content
+            .lines()
+            .skip_while(|l| l.trim() != "web:")
+            .nth(1)
+            .is_some_and(|l| l.trim() == "external: true");
+        assert!(
+            has_external_web,
+            "{compose} no longer declares the external `web` network — \
+             update the wizard's network handling"
         );
     }
 }

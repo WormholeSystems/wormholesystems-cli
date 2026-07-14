@@ -12,6 +12,10 @@ use crate::plan::Mode;
 
 const STATE_FILE: &str = ".wsctl-state.json";
 
+fn default_network() -> String {
+    crate::plan::DEFAULT_NETWORK.to_string()
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ResumeState {
     pub mode: Mode,
@@ -19,6 +23,9 @@ pub struct ResumeState {
     pub ws_domain: String,
     pub app_port: u16,
     pub reverb_port: u16,
+    /// State files from before the network was configurable lack this.
+    #[serde(default = "default_network")]
+    pub network: String,
     /// Ids of completed steps (see plan::build_steps).
     pub completed: Vec<String>,
     #[serde(skip)]
@@ -33,6 +40,7 @@ impl ResumeState {
             ws_domain: a.ws_domain.clone(),
             app_port: a.app_port,
             reverb_port: a.reverb_port,
+            network: a.network.clone(),
             completed: Vec::new(),
             path: repo.join(STATE_FILE),
         }
@@ -84,6 +92,7 @@ mod tests {
         Answers {
             app_port: 8000,
             reverb_port: 8081,
+            network: "corp-net".into(),
             app_domain: "localhost".into(),
             ws_domain: "localhost:8081".into(),
             acme_email: String::new(),
@@ -113,9 +122,25 @@ mod tests {
         assert!(loaded.is_done("build"));
         assert!(!loaded.is_done("up"));
         assert_eq!(loaded.app_port, 8000);
+        assert_eq!(loaded.network, "corp-net");
 
         loaded.delete().unwrap();
         assert!(ResumeState::load(&dir).unwrap().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn state_from_before_configurable_networks_defaults_to_web() {
+        let dir = std::env::temp_dir().join(format!("wsctl-state-compat-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(STATE_FILE),
+            r#"{"mode":"production","app_domain":"a","ws_domain":"b","app_port":80,"reverb_port":8080,"completed":["network"]}"#,
+        )
+        .unwrap();
+
+        let loaded = ResumeState::load(&dir).unwrap().expect("state exists");
+        assert_eq!(loaded.network, "web");
         fs::remove_dir_all(&dir).ok();
     }
 }

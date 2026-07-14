@@ -14,7 +14,7 @@ One tool to set up and manage a self-hosted [Wormhole Systems](https://wormhole.
 curl --proto '=https' --tlsv1.2 -sSf https://install.wormhole.systems | sh
 ```
 
-Detects your platform, installs the latest `wsctl` release binary and offers to start the setup right away. Pin a version with `WSCTL_VERSION=v0.4.0 curl ... | sh`, or grab a binary directly from the [releases](https://github.com/WormholeSystems/wormholesystems-cli/releases).
+Detects your platform, installs the latest `wsctl` release binary and offers to start the setup right away. Pin a version with `WSCTL_VERSION=v0.5.0 curl ... | sh`, or grab a binary directly from the [releases](https://github.com/WormholeSystems/wormholesystems-cli/releases).
 
 **Requirements:** git, Docker with Compose v2.24+, and for production a domain pointing at your server with ports 80/443 open. You will also need an [EVE developer application](https://developers.eveonline.com/) — the wizard tells you exactly how to configure it (callback URL and scopes) when you get there.
 
@@ -32,6 +32,8 @@ The wizard walks through everything the stack needs:
 - production (Traefik, automatic SSL) or local test mode (plain HTTP on localhost)
 - asks for domains, contact info and EVE application credentials; generates all secrets (database passwords, Reverb keys, Laravel `APP_KEY`)
 - in production mode, detects your server's public IP, shows the exact DNS records to create (and why Let's Encrypt needs them), then verifies the domains actually point at the server — with a re-check loop while DNS propagates
+- coexists with what's already on the machine: if the `web` docker network is in use by other containers, the stack can run on a separate network with a name of your choice (a compose override rewires Traefik accordingly)
+- shows a full review before touching anything — every setting, every file it will write, every docker command it will run, in order — and only proceeds after you confirm
 - writes `.env` and `dockerfiles/mysql/.env` with guaranteed-matching credentials
 - builds and starts the stack, then initializes the database (EVE SDE download, migrations)
 

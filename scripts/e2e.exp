@@ -10,14 +10,13 @@ expect "Which setup" ; send "\r"
 expect "Main domain" ; send "example.com\r"
 expect "WebSocket domain" ; send "\r"
 expect "certificate notifications" ; send "admin@example.com\r"
-# DNS gate: example.com does not point here, so pick "Continue anyway"
-# (second option); without internet the gate prints and moves on.
+# Optional gates before the contact prompt: the DNS check (pick "Continue
+# anyway"; absent without internet) and an existing `web` network with
+# containers attached (pick "Share ..."; absent on clean docker hosts).
 expect {
-    "How do you want to proceed" {
-        send "\033\[B\r"
-        expect "Contact email" ; send "me@example.com\r"
-    }
-    "Contact email" { send "me@example.com\r" }
+    "How do you want to proceed" { send "\033\[B\r" ; exp_continue }
+    "What should it do"          { send "\033\[B\r" ; exp_continue }
+    "Contact email"              { send "me@example.com\r" }
 }
 expect "character name" ; send "My Character\r"
 expect "EVE Client ID" ; send "clientid1234\r"
@@ -26,5 +25,6 @@ expect "Restrict logins" ; send "\r"
 expect "Database name" ; send "\r"
 expect "Database user" ; send "\r"
 expect "Generate the database passwords" ; send "\r"
+expect "Continue with these settings" ; send "\r"
 expect "start the stack now" ; send "n\r"
 expect eof

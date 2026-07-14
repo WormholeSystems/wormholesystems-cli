@@ -33,19 +33,46 @@ pub fn daemon_running() -> bool {
 }
 
 /// The external network Traefik and the app share in production.
-pub fn ensure_web_network(dir: &Path) -> Result<()> {
-    let exists = Command::new("docker")
-        .args(["network", "inspect", "web"])
-        .current_dir(dir)
-        .output()
-        .context("failed to run docker")?
-        .status
-        .success();
-    if exists {
-        println!("Network {} already exists, skipping.", style("web").green());
+pub fn ensure_network(dir: &Path, name: &str) -> Result<()> {
+    if network_exists(name) {
+        println!("Network {} already exists, skipping.", style(name).green());
         return Ok(());
     }
-    run(dir, "docker", &["network", "create", "-d", "bridge", "web"])
+    run(dir, "docker", &["network", "create", "-d", "bridge", name])
+}
+
+pub fn network_exists(name: &str) -> bool {
+    Command::new("docker")
+        .args(["network", "inspect", name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Names of the running containers attached to a network (empty when the
+/// network is missing or unused).
+pub fn network_containers(name: &str) -> Vec<String> {
+    let Ok(out) = Command::new("docker")
+        .args([
+            "network",
+            "inspect",
+            name,
+            "--format",
+            "{{range .Containers}}{{.Name}}\n{{end}}",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 pub fn running_services(dir: &Path, files: &[String]) -> Result<Vec<String>> {

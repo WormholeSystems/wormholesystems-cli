@@ -74,7 +74,19 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
     };
     let template = fs::read_to_string(repo.join(template_name))
         .with_context(|| format!("cannot read {template_name}"))?;
-    for file in plan::build_files(mode, &answers, &template) {
+    let files = plan::build_files(mode, &answers, &template);
+    let steps = plan::build_steps(
+        mode,
+        answers.app_port,
+        answers.reverb_port,
+        &answers.network,
+    );
+
+    if !confirm_plan(&repo, mode, &answers, &files, &steps)? {
+        bail!("setup aborted — nothing was written or run; re-run `wsctl setup` to start over");
+    }
+
+    for file in &files {
         write_confirmed(&repo.join(file.rel_path), &file.content)?;
     }
 
@@ -82,7 +94,12 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
         check_force_https_guard(&repo);
     }
 
-    let compose_files = plan::compose_files(mode, answers.app_port, answers.reverb_port);
+    let compose_files = plan::compose_files(
+        mode,
+        answers.app_port,
+        answers.reverb_port,
+        &answers.network,
+    );
 
     if !preflight_buildable(&repo) {
         print_summary(
@@ -97,7 +114,7 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
     }
 
     let start_prompt = match mode {
-        Mode::Production => "Create the `web` network, build and start the stack now?",
+        Mode::Production => "Build and start the stack now?",
         Mode::Local => "Build and start the local test stack now?",
     };
     if Confirm::new(start_prompt).with_default(true).prompt()? {
@@ -138,7 +155,7 @@ pub fn update(dir: Option<PathBuf>) -> Result<()> {
         bail!("the docker daemon is not running — start Docker first");
     }
 
-    let files = plan::compose_files(mode, 80, 8080);
+    let files = plan::compose_files(mode, 80, 8080, plan::DEFAULT_NETWORK);
     let compose_hint = std::iter::once("docker compose".to_string())
         .chain(files.iter().map(|f| format!("-f {f}")))
         .collect::<Vec<_>>()
@@ -163,7 +180,7 @@ pub fn update(dir: Option<PathBuf>) -> Result<()> {
     for action in plan::update_actions(mode) {
         match action {
             plan::Action::Command { program, args } => runner.run(&repo, &program, &args)?,
-            plan::Action::EnsureWebNetwork => {}
+            plan::Action::EnsureNetwork { .. } => {}
         }
     }
     println!(
@@ -313,6 +330,159 @@ fn dns_gate(app_domain: &str, ws_domain: &str) -> Result<()> {
     }
 }
 
+/// Production joins the external `web` network. When one already exists
+/// with containers attached — say another Traefik setup — the user picks
+/// whether to share it or run this stack on its own network, so wsctl
+/// can install alongside an existing system without touching it.
+fn pick_network() -> Result<String> {
+    let default = plan::DEFAULT_NETWORK;
+    if !docker::daemon_running() || !docker::network_exists(default) {
+        return Ok(default.to_string());
+    }
+    let attached = docker::network_containers(default);
+    if attached.is_empty() {
+        println!("Found an existing, unused `{default}` docker network — the stack will join it.");
+        return Ok(default.to_string());
+    }
+
+    println!(
+        "\n{} a `{default}` docker network already exists with {} container(s) attached:\n{}",
+        style("Note:").yellow().bold(),
+        attached.len(),
+        attached
+            .iter()
+            .map(|c| format!("    - {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let choice = Select::new(
+        "This stack also uses a network named `web` by default. What should it do?",
+        vec![
+            "Run on a separate network — leave the existing containers untouched",
+            "Share the existing `web` network with those containers",
+        ],
+    )
+    .with_help_message(
+        "separate keeps the stacks isolated; sharing lets this stack's Traefik see those containers",
+    )
+    .prompt()?;
+    if choice.starts_with("Share") {
+        return Ok(default.to_string());
+    }
+
+    loop {
+        let name = Text::new("Network name for this stack:")
+            .with_default("wormholesystems")
+            .with_validator(valid_network_name)
+            .prompt()?;
+        let attached = docker::network_containers(&name);
+        if attached.is_empty() {
+            let status = if docker::network_exists(&name) {
+                "existing and unused — the stack will join it"
+            } else {
+                "will be created"
+            };
+            println!("Using network {} ({status}).", style(&name).green());
+            return Ok(name);
+        }
+        println!(
+            "`{name}` also exists with {} container(s) attached — pick another name.",
+            attached.len()
+        );
+    }
+}
+
+fn valid_network_name(
+    input: &str,
+) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
+    use inquire::validator::Validation;
+    let mut chars = input.chars();
+    let valid = matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+    Ok(if valid {
+        Validation::Valid
+    } else {
+        Validation::Invalid(
+            "network names must start alphanumeric and only use letters, digits, '_', '.' or '-'"
+                .into(),
+        )
+    })
+}
+
+/// Everything the wizard is about to write and run, shown for one
+/// go-ahead — at this point nothing has touched the disk or docker.
+fn confirm_plan(
+    repo: &Path,
+    mode: Mode,
+    a: &Answers,
+    files: &[plan::PlannedFile],
+    steps: &[Step],
+) -> Result<bool> {
+    let row = |label: &str, value: &str| {
+        println!("  {} {value}", style(format!("{label:<16}")).dim());
+    };
+
+    println!("\n{}", style("Review — settings").bold());
+    match mode {
+        Mode::Production => {
+            row("Mode", "production (Traefik, automatic SSL)");
+            row("App", &format!("https://{}", a.app_domain));
+            row("WebSocket", &format!("wss://{}", a.ws_domain));
+            row("ACME email", &a.acme_email);
+            let network_note = if !docker::daemon_running() {
+                "created when the stack starts, if missing"
+            } else if docker::network_exists(&a.network) {
+                "existing — the stack joins it"
+            } else {
+                "will be created"
+            };
+            row("Docker network", &format!("{} ({network_note})", a.network));
+        }
+        Mode::Local => {
+            row("Mode", "local test (plain HTTP, localhost)");
+            row("App", &plan::local_app_url(a.app_port));
+            row("WebSocket", &format!("ws://localhost:{}", a.reverb_port));
+        }
+    }
+    row("Contact", &a.contact_email);
+    row("EVE client ID", &a.eve_client_id);
+    let logins = if a.allowed_affiliations.trim().is_empty() {
+        "any EVE character"
+    } else {
+        a.allowed_affiliations.as_str()
+    };
+    row("Logins", logins);
+    row(
+        "Database",
+        &format!("{} (user: {})", a.db_database, a.db_username),
+    );
+
+    println!("\n{}", style("Review — files to write").bold());
+    for file in files {
+        let note = if repo.join(file.rel_path).exists() {
+            style("  (exists — you will be asked before it is overwritten)").yellow()
+        } else {
+            style("")
+        };
+        println!("  {}{note}", file.rel_path);
+    }
+
+    println!(
+        "\n{}",
+        style("Review — commands that will run (in this order)").bold()
+    );
+    for step in steps {
+        for action in &step.actions {
+            println!("  {} {}", style("$").dim(), action.describe());
+        }
+    }
+
+    println!();
+    Ok(Confirm::new("Continue with these settings?")
+        .with_default(true)
+        .prompt()?)
+}
+
 /// The config files are already on disk; only the remaining steps run.
 fn resume_setup(repo: &Path, state: ResumeState) -> Result<()> {
     if !preflight_buildable(repo) {
@@ -323,8 +493,9 @@ fn resume_setup(repo: &Path, state: ResumeState) -> Result<()> {
 
 fn execute_remaining(repo: &Path, mut state: ResumeState) -> Result<()> {
     let mode = state.mode;
-    let steps = plan::build_steps(mode, state.app_port, state.reverb_port);
-    let compose_files = plan::compose_files(mode, state.app_port, state.reverb_port);
+    let steps = plan::build_steps(mode, state.app_port, state.reverb_port, &state.network);
+    let compose_files =
+        plan::compose_files(mode, state.app_port, state.reverb_port, &state.network);
 
     let group: Vec<&Step> = steps
         .iter()
@@ -611,7 +782,7 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         ),
     };
 
-    let (app_domain, ws_domain, acme_email) = match mode {
+    let (app_domain, ws_domain, acme_email, network) = match mode {
         Mode::Production => {
             let app_domain = Text::new("Main domain (e.g. wormhole.systems):")
                 .with_validator(required)
@@ -632,12 +803,14 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
                 )
                 .prompt()?;
             dns_gate(&app_domain, &ws_domain)?;
-            (app_domain, ws_domain, acme_email)
+            let network = pick_network()?;
+            (app_domain, ws_domain, acme_email, network)
         }
         Mode::Local => (
             "localhost".into(),
             format!("localhost:{reverb_port}"),
             "admin@localhost".into(),
+            plan::DEFAULT_NETWORK.to_string(),
         ),
     };
 
@@ -723,6 +896,7 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
     Ok(Answers {
         app_port,
         reverb_port,
+        network,
         app_domain,
         ws_domain,
         acme_email,
