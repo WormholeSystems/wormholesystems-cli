@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use wormholesystems_cli::envfile;
-use wormholesystems_cli::plan::{Answers, Mode, env_values};
+use wormholesystems_cli::plan::{Answers, DiscordAnswers, Mode, env_values};
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,6 +35,15 @@ fn answers() -> Answers {
         db_username: "wormholesystems".into(),
         db_password: "dbpass".into(),
         db_root_password: "rootpass".into(),
+        // Enabled with a guild so every DISCORD_* key the wizard can
+        // write is drift-checked against the templates.
+        discord: Some(DiscordAnswers {
+            application_id: "123".into(),
+            client_id: "123".into(),
+            client_secret: "discordsecret".into(),
+            bot_token: "bottoken".into(),
+            test_guild_id: "456".into(),
+        }),
     }
 }
 
@@ -201,6 +210,54 @@ fn compose_env_file_paths_match_what_the_wizard_writes() {
             assert!(
                 [".env", "dockerfiles/mysql/.env"].contains(&path),
                 "{compose} reads an env file the wizard does not write: {path}"
+            );
+        }
+    }
+}
+
+/// The wizard's Discord override re-declares the service upstream ships
+/// commented out, so its image, network and volume names must keep
+/// matching the upstream compose files.
+#[test]
+fn discord_override_matches_upstream_compose_files() {
+    use wormholesystems_cli::plan::{DISCORD_OVERRIDE_FILE, build_files};
+
+    for (compose, mode) in [
+        ("docker-compose.prod.yml", Mode::Production),
+        ("docker-compose.test.yml", Mode::Local),
+    ] {
+        let content = fixture(compose);
+        assert!(
+            content.contains("php artisan discord:listen"),
+            "{compose} no longer documents the discord service — update the wizard's override"
+        );
+        let files = build_files(mode, &answers(), "APP_URL=x\n");
+        let override_file = files
+            .iter()
+            .find(|f| f.rel_path == DISCORD_OVERRIDE_FILE)
+            .expect("discord override planned");
+        let lines: Vec<&str> = override_file.content.lines().map(str::trim).collect();
+        let image = lines
+            .iter()
+            .find_map(|l| l.strip_prefix("image: "))
+            .expect("override file lacks an image");
+        let network = lines
+            .iter()
+            .position(|l| *l == "networks:")
+            .and_then(|i| lines[i + 1].strip_prefix("- "))
+            .expect("override file lacks a network");
+        let storage = lines
+            .iter()
+            .find(|l| l.ends_with(":/app/storage"))
+            .expect("override file lacks the storage volume");
+        for value in [
+            format!("image: {image}"),
+            network.to_string(),
+            storage.to_string(),
+        ] {
+            assert!(
+                content.contains(&value),
+                "{compose} no longer uses `{value}` — update the wizard's discord override"
             );
         }
     }

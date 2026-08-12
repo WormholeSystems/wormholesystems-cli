@@ -9,6 +9,7 @@ use crate::{envfile, secrets};
 
 pub const PORTS_OVERRIDE_FILE: &str = "docker-compose.wsctl-ports.yml";
 pub const NETWORK_OVERRIDE_FILE: &str = "docker-compose.wsctl-network.yml";
+pub const DISCORD_OVERRIDE_FILE: &str = "docker-compose.wsctl-discord.yml";
 
 /// The external network name the upstream compose files expect.
 pub const DEFAULT_NETWORK: &str = "web";
@@ -70,6 +71,42 @@ pub enum Mode {
     Local,
 }
 
+/// Whether the optional Discord bot joins the stack and how its slash
+/// commands get registered.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscordSetup {
+    #[default]
+    Off,
+    /// Bot service runs; commands are registered globally.
+    Global,
+    /// Bot service runs; commands are registered on DISCORD_TEST_GUILD_ID.
+    Guild,
+}
+
+impl DiscordSetup {
+    pub fn enabled(self) -> bool {
+        self != DiscordSetup::Off
+    }
+
+    pub fn from_answers(a: &Answers) -> Self {
+        match &a.discord {
+            None => DiscordSetup::Off,
+            Some(d) if d.test_guild_id.trim().is_empty() => DiscordSetup::Global,
+            Some(_) => DiscordSetup::Guild,
+        }
+    }
+}
+
+pub struct DiscordAnswers {
+    pub application_id: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub bot_token: String,
+    /// Guild for instant command registration; empty registers globally.
+    pub test_guild_id: String,
+}
+
 pub struct Answers {
     /// Host port the app binds in local mode (80 unless remapped).
     pub app_port: u16,
@@ -89,6 +126,9 @@ pub struct Answers {
     pub db_username: String,
     pub db_password: String,
     pub db_root_password: String,
+    /// Credentials of the optional Discord integration; None leaves the
+    /// template's empty DISCORD_* keys untouched.
+    pub discord: Option<DiscordAnswers>,
 }
 
 pub fn local_app_url(app_port: u16) -> String {
@@ -118,6 +158,15 @@ pub fn env_values(mode: Mode, a: &Answers) -> BTreeMap<String, String> {
     set("EVE_CLIENT_ID", &a.eve_client_id);
     set("EVE_CLIENT_SECRET", &a.eve_client_secret);
     set("ALLOWED_AFFILIATION_IDS", &a.allowed_affiliations);
+    if let Some(d) = &a.discord {
+        set("DISCORD_APPLICATION_ID", &d.application_id);
+        set("DISCORD_CLIENT_ID", &d.client_id);
+        set("DISCORD_CLIENT_SECRET", &d.client_secret);
+        set("DISCORD_BOT_TOKEN", &d.bot_token);
+        if !d.test_guild_id.trim().is_empty() {
+            set("DISCORD_TEST_GUILD_ID", &d.test_guild_id);
+        }
+    }
     match mode {
         Mode::Production => {
             set("APP_URL", &format!("https://{}", a.app_domain));
@@ -177,10 +226,17 @@ fn custom_network(mode: Mode, network: &str) -> bool {
 
 /// Local test mode bypasses docker-compose.yml (whose includes pull in
 /// the traefik/prod stack) by targeting the test file directly. A custom
-/// network makes production compose explicit too, so the override merges
-/// on top of the included files (needs docker compose v2.24+).
-pub fn compose_files(mode: Mode, app_port: u16, reverb_port: u16, network: &str) -> Vec<String> {
-    match mode {
+/// network or the Discord override makes production compose explicit too,
+/// so the override merges on top of the included files (needs docker
+/// compose v2.24+).
+pub fn compose_files(
+    mode: Mode,
+    app_port: u16,
+    reverb_port: u16,
+    network: &str,
+    discord: DiscordSetup,
+) -> Vec<String> {
+    let mut files = match mode {
         Mode::Production => {
             if custom_network(mode, network) {
                 vec![
@@ -198,7 +254,14 @@ pub fn compose_files(mode: Mode, app_port: u16, reverb_port: u16, network: &str)
             }
             files
         }
+    };
+    if discord.enabled() {
+        if files.is_empty() {
+            files.push("docker-compose.yml".to_string());
+        }
+        files.push(DISCORD_OVERRIDE_FILE.to_string());
     }
+    files
 }
 
 pub fn build_files(mode: Mode, a: &Answers, env_template: &str) -> Vec<PlannedFile> {
@@ -240,6 +303,12 @@ pub fn build_files(mode: Mode, a: &Answers, env_template: &str) -> Vec<PlannedFi
             ),
         });
     }
+    if a.discord.is_some() {
+        files.push(PlannedFile {
+            rel_path: DISCORD_OVERRIDE_FILE,
+            content: discord_override(mode),
+        });
+    }
     if custom_ports(mode, a.app_port, a.reverb_port) {
         files.push(PlannedFile {
             rel_path: PORTS_OVERRIDE_FILE,
@@ -262,6 +331,50 @@ pub fn build_files(mode: Mode, a: &Answers, env_template: &str) -> Vec<PlannedFi
     files
 }
 
+/// Mirrors the `discord` service the upstream compose files ship commented
+/// out (same image, network and volumes as the app services) — the drift
+/// tests compare these values against the upstream files.
+fn discord_override(mode: Mode) -> String {
+    let (image, network, storage) = match mode {
+        Mode::Production => (
+            "wormhole-systems:production",
+            "ws-internal",
+            "laravel-storage",
+        ),
+        Mode::Local => (
+            "wormhole-systems-test:local",
+            "ws-test-internal",
+            "laravel-storage-test",
+        ),
+    };
+    format!(
+        "# Generated by wsctl — runs the optional Discord bot as its own service,\n\
+         # mirroring the `discord` service the upstream compose files ship commented\n\
+         # out. Safe to delete; wsctl setup regenerates it.\n\
+         services:\n\
+        \x20 discord:\n\
+        \x20   image: {image}\n\
+        \x20   env_file:\n\
+        \x20     - .env\n\
+        \x20   networks:\n\
+        \x20     - {network}\n\
+        \x20   volumes:\n\
+        \x20     - {storage}:/app/storage\n\
+        \x20     - ./dockerfiles/common/frankenPHP/php.ini:/usr/local/etc/php/conf.d/custom.ini\n\
+        \x20   tty: true\n\
+        \x20   command: php artisan discord:listen\n\
+        \x20   restart: unless-stopped\n\
+        \x20   depends_on:\n\
+        \x20     app:\n\
+        \x20       condition: service_healthy\n\
+        \x20   healthcheck:\n\
+        \x20     test: [\"CMD\", \"pgrep\", \"-f\", \"php artisan discord:listen\"]\n\
+        \x20     interval: 10s\n\
+        \x20     timeout: 5s\n\
+        \x20     retries: 3\n"
+    )
+}
+
 fn compose_action(files: &[String], tail: &[&str]) -> Action {
     let mut args = vec!["compose".to_string()];
     for file in files {
@@ -281,10 +394,17 @@ fn artisan_action(files: &[String], tail: &[&str]) -> Action {
     compose_action(files, &args)
 }
 
-/// Takes only mode, ports and network so a resumed run can rebuild the
-/// step list from persisted state without re-asking anything.
-pub fn build_steps(mode: Mode, app_port: u16, reverb_port: u16, network: &str) -> Vec<Step> {
-    let files = compose_files(mode, app_port, reverb_port, network);
+/// Takes only mode, ports, network and the Discord choice so a resumed
+/// run can rebuild the step list from persisted state without re-asking
+/// anything.
+pub fn build_steps(
+    mode: Mode,
+    app_port: u16,
+    reverb_port: u16,
+    network: &str,
+    discord: DiscordSetup,
+) -> Vec<Step> {
+    let files = compose_files(mode, app_port, reverb_port, network, discord);
     let compose = |tail: &[&str]| compose_action(&files, tail);
     let artisan = |tail: &[&str]| artisan_action(&files, tail);
 
@@ -323,6 +443,17 @@ pub fn build_steps(mode: Mode, app_port: u16, reverb_port: u16, network: &str) -
         group: StepGroup::Init,
         actions: vec![artisan(&["optimize:clear"]), artisan(&["optimize"])],
     });
+    if discord.enabled() {
+        let mut args = vec!["discord:register-commands"];
+        if discord == DiscordSetup::Global {
+            args.push("--global");
+        }
+        steps.push(Step {
+            id: "discord-commands",
+            group: StepGroup::Init,
+            actions: vec![artisan(&args)],
+        });
+    }
     steps
 }
 
@@ -330,7 +461,7 @@ pub fn build_steps(mode: Mode, app_port: u16, reverb_port: u16, network: &str) -
 /// and networks are irrelevant for `exec` (services resolve via the
 /// compose project), so the defaults suffice.
 pub fn update_actions(mode: Mode) -> Vec<Action> {
-    let files = compose_files(mode, 80, 8080, DEFAULT_NETWORK);
+    let files = compose_files(mode, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Off);
     vec![
         artisan_action(&files, &["sde:download"]),
         artisan_action(&files, &["migrate", "--force"]),
@@ -378,6 +509,17 @@ mod tests {
             db_username: "user".into(),
             db_password: "pass".into(),
             db_root_password: "root".into(),
+            discord: None,
+        }
+    }
+
+    fn discord_answers(test_guild_id: &str) -> DiscordAnswers {
+        DiscordAnswers {
+            application_id: "appid".into(),
+            client_id: "clientid".into(),
+            client_secret: "clientsecret".into(),
+            bot_token: "bottoken".into(),
+            test_guild_id: test_guild_id.into(),
         }
     }
 
@@ -390,7 +532,7 @@ mod tests {
 
     #[test]
     fn local_steps_use_test_compose_file() {
-        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK);
+        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Off);
         assert!(steps.iter().all(|s| s.id != "network"));
         let build = steps.iter().find(|s| s.id == "build").unwrap();
         assert_eq!(
@@ -401,7 +543,7 @@ mod tests {
 
     #[test]
     fn custom_ports_add_override_to_every_command_and_files() {
-        let steps = build_steps(Mode::Local, 8000, 8081, DEFAULT_NETWORK);
+        let steps = build_steps(Mode::Local, 8000, 8081, DEFAULT_NETWORK, DiscordSetup::Off);
         let up = steps.iter().find(|s| s.id == "up").unwrap();
         assert_eq!(
             command_args(&up.actions[0]),
@@ -434,7 +576,13 @@ mod tests {
 
     #[test]
     fn production_plans_network_and_bare_compose() {
-        let steps = build_steps(Mode::Production, 80, 8080, DEFAULT_NETWORK);
+        let steps = build_steps(
+            Mode::Production,
+            80,
+            8080,
+            DEFAULT_NETWORK,
+            DiscordSetup::Off,
+        );
         assert_eq!(steps[0].id, "network");
         assert!(
             matches!(&steps[0].actions[0], Action::EnsureNetwork { name } if name == DEFAULT_NETWORK)
@@ -445,7 +593,7 @@ mod tests {
 
     #[test]
     fn custom_network_plans_override_file_and_explicit_compose() {
-        let steps = build_steps(Mode::Production, 80, 8080, "corp-net");
+        let steps = build_steps(Mode::Production, 80, 8080, "corp-net", DiscordSetup::Off);
         assert!(
             matches!(&steps[0].actions[0], Action::EnsureNetwork { name } if name == "corp-net")
         );
@@ -481,9 +629,18 @@ mod tests {
     fn default_network_plans_no_override() {
         let files = build_files(Mode::Production, &answers(80, 8080), "APP_URL=x\n");
         assert!(files.iter().all(|f| f.rel_path != NETWORK_OVERRIDE_FILE));
-        assert!(compose_files(Mode::Production, 80, 8080, DEFAULT_NETWORK).is_empty());
+        assert!(
+            compose_files(
+                Mode::Production,
+                80,
+                8080,
+                DEFAULT_NETWORK,
+                DiscordSetup::Off
+            )
+            .is_empty()
+        );
         // Local mode never joins the external network, whatever its name.
-        let local = compose_files(Mode::Local, 80, 8080, "corp-net");
+        let local = compose_files(Mode::Local, 80, 8080, "corp-net", DiscordSetup::Off);
         assert_eq!(local, vec!["docker-compose.test.yml".to_string()]);
     }
 
@@ -494,7 +651,7 @@ mod tests {
         };
         assert!(ensure.describe().starts_with("docker network create"));
         assert!(ensure.describe().contains("corp-net"));
-        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK);
+        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Off);
         let build = steps.iter().find(|s| s.id == "build").unwrap();
         assert_eq!(
             build.actions[0].describe(),
@@ -531,6 +688,149 @@ mod tests {
     }
 
     #[test]
+    fn discord_answers_flow_into_env_and_planned_files() {
+        let mut a = answers(80, 8080);
+        a.discord = Some(discord_answers(""));
+        assert_eq!(DiscordSetup::from_answers(&a), DiscordSetup::Global);
+
+        let values = env_values(Mode::Local, &a);
+        assert_eq!(values["DISCORD_APPLICATION_ID"], "appid");
+        assert_eq!(values["DISCORD_CLIENT_ID"], "clientid");
+        assert_eq!(values["DISCORD_CLIENT_SECRET"], "clientsecret");
+        assert_eq!(values["DISCORD_BOT_TOKEN"], "bottoken");
+        assert!(!values.contains_key("DISCORD_TEST_GUILD_ID"));
+
+        let files = build_files(Mode::Local, &a, "APP_URL=x\n");
+        let override_file = files
+            .iter()
+            .find(|f| f.rel_path == DISCORD_OVERRIDE_FILE)
+            .expect("discord override planned");
+        assert!(
+            override_file
+                .content
+                .contains("image: wormhole-systems-test:local")
+        );
+        assert!(override_file.content.contains("- ws-test-internal"));
+        assert!(
+            override_file
+                .content
+                .contains("- laravel-storage-test:/app/storage")
+        );
+        assert!(
+            override_file
+                .content
+                .contains("command: php artisan discord:listen")
+        );
+
+        a.discord = Some(discord_answers("456"));
+        assert_eq!(DiscordSetup::from_answers(&a), DiscordSetup::Guild);
+        let values = env_values(Mode::Local, &a);
+        assert_eq!(values["DISCORD_TEST_GUILD_ID"], "456");
+    }
+
+    #[test]
+    fn no_discord_plans_no_override_or_env_keys() {
+        let a = answers(80, 8080);
+        assert_eq!(DiscordSetup::from_answers(&a), DiscordSetup::Off);
+        let values = env_values(Mode::Local, &a);
+        assert!(values.keys().all(|k| !k.starts_with("DISCORD_")));
+        let files = build_files(Mode::Local, &a, "APP_URL=x\n");
+        assert!(files.iter().all(|f| f.rel_path != DISCORD_OVERRIDE_FILE));
+    }
+
+    #[test]
+    fn discord_makes_production_compose_explicit_and_registers_globally() {
+        let files = compose_files(
+            Mode::Production,
+            80,
+            8080,
+            DEFAULT_NETWORK,
+            DiscordSetup::Global,
+        );
+        assert_eq!(
+            files,
+            vec![
+                "docker-compose.yml".to_string(),
+                DISCORD_OVERRIDE_FILE.to_string()
+            ]
+        );
+
+        let mut a = answers(80, 8080);
+        a.discord = Some(discord_answers(""));
+        let planned = build_files(Mode::Production, &a, "APP_URL=x\n");
+        let override_file = planned
+            .iter()
+            .find(|f| f.rel_path == DISCORD_OVERRIDE_FILE)
+            .expect("discord override planned");
+        assert!(
+            override_file
+                .content
+                .contains("image: wormhole-systems:production")
+        );
+        assert!(override_file.content.contains("- ws-internal"));
+        assert!(
+            override_file
+                .content
+                .contains("- laravel-storage:/app/storage")
+        );
+
+        let steps = build_steps(
+            Mode::Production,
+            80,
+            8080,
+            DEFAULT_NETWORK,
+            DiscordSetup::Global,
+        );
+        let register = steps.iter().find(|s| s.id == "discord-commands").unwrap();
+        assert_eq!(register.group, StepGroup::Init);
+        assert_eq!(
+            command_args(&register.actions[0]),
+            &[
+                "compose",
+                "-f",
+                "docker-compose.yml",
+                "-f",
+                DISCORD_OVERRIDE_FILE,
+                "exec",
+                "app",
+                "php",
+                "artisan",
+                "discord:register-commands",
+                "--global"
+            ]
+        );
+    }
+
+    #[test]
+    fn guild_discord_registers_without_global_flag() {
+        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Guild);
+        let register = steps.iter().find(|s| s.id == "discord-commands").unwrap();
+        let args = command_args(&register.actions[0]);
+        assert_eq!(args.last().unwrap(), "discord:register-commands");
+        let files = compose_files(
+            Mode::Local,
+            8000,
+            8081,
+            DEFAULT_NETWORK,
+            DiscordSetup::Guild,
+        );
+        assert_eq!(
+            files,
+            vec![
+                "docker-compose.test.yml".to_string(),
+                PORTS_OVERRIDE_FILE.to_string(),
+                DISCORD_OVERRIDE_FILE.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn discord_off_plans_no_register_step() {
+        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Off);
+        assert!(steps.iter().all(|s| s.id != "discord-commands"));
+    }
+
+    #[test]
     fn mode_is_detected_from_app_env() {
         assert!(matches!(
             mode_from_env("APP_ENV=local\n"),
@@ -545,7 +845,7 @@ mod tests {
 
     #[test]
     fn init_steps_run_artisan_inside_app_container() {
-        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK);
+        let steps = build_steps(Mode::Local, 80, 8080, DEFAULT_NETWORK, DiscordSetup::Off);
         let sde = steps.iter().find(|s| s.id == "sde").unwrap();
         assert_eq!(sde.group, StepGroup::Init);
         assert_eq!(

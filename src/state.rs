@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::plan::Mode;
+use crate::plan::{DiscordSetup, Mode};
 
 const STATE_FILE: &str = ".wsctl-state.json";
 
@@ -26,6 +26,9 @@ pub struct ResumeState {
     /// State files from before the network was configurable lack this.
     #[serde(default = "default_network")]
     pub network: String,
+    /// State files from before the Discord option lack this.
+    #[serde(default)]
+    pub discord: DiscordSetup,
     /// Ids of completed steps (see plan::build_steps).
     pub completed: Vec<String>,
     #[serde(skip)]
@@ -41,6 +44,7 @@ impl ResumeState {
             app_port: a.app_port,
             reverb_port: a.reverb_port,
             network: a.network.clone(),
+            discord: DiscordSetup::from_answers(a),
             completed: Vec::new(),
             path: repo.join(STATE_FILE),
         }
@@ -104,6 +108,13 @@ mod tests {
             db_username: String::new(),
             db_password: "dbpass".into(),
             db_root_password: String::new(),
+            discord: Some(crate::plan::DiscordAnswers {
+                application_id: "appid".into(),
+                client_id: "appid".into(),
+                client_secret: "discordsecret".into(),
+                bot_token: "bottoken".into(),
+                test_guild_id: String::new(),
+            }),
         }
     }
 
@@ -116,13 +127,14 @@ mod tests {
         state.mark_done("build").unwrap();
 
         let raw = fs::read_to_string(dir.join(STATE_FILE)).unwrap();
-        assert!(!raw.contains("secret") && !raw.contains("dbpass"));
+        assert!(!raw.contains("secret") && !raw.contains("dbpass") && !raw.contains("bottoken"));
 
         let loaded = ResumeState::load(&dir).unwrap().expect("state exists");
         assert!(loaded.is_done("build"));
         assert!(!loaded.is_done("up"));
         assert_eq!(loaded.app_port, 8000);
         assert_eq!(loaded.network, "corp-net");
+        assert_eq!(loaded.discord, DiscordSetup::Global);
 
         loaded.delete().unwrap();
         assert!(ResumeState::load(&dir).unwrap().is_none());
@@ -141,6 +153,7 @@ mod tests {
 
         let loaded = ResumeState::load(&dir).unwrap().expect("state exists");
         assert_eq!(loaded.network, "web");
+        assert_eq!(loaded.discord, DiscordSetup::Off);
         fs::remove_dir_all(&dir).ok();
     }
 }

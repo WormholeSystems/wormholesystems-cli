@@ -58,7 +58,7 @@ pub fn run_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Mode, StepGroup, build_steps};
+    use crate::plan::{DiscordSetup, Mode, StepGroup, build_steps};
 
     #[derive(Default)]
     struct MockRunner {
@@ -94,6 +94,7 @@ mod tests {
             db_username: String::new(),
             db_password: String::new(),
             db_root_password: String::new(),
+            discord: None,
         };
         ResumeState::new(dir, Mode::Local, &answers)
     }
@@ -107,7 +108,7 @@ mod tests {
     #[test]
     fn completed_steps_are_skipped_on_resume() {
         let dir = temp_repo("skip");
-        let steps = build_steps(Mode::Local, 80, 8080, "web");
+        let steps = build_steps(Mode::Local, 80, 8080, "web", DiscordSetup::Off);
         let stack: Vec<&_> = steps
             .iter()
             .filter(|s| s.group == StepGroup::Stack)
@@ -134,7 +135,7 @@ mod tests {
     #[test]
     fn production_stack_ensures_network_once() {
         let dir = temp_repo("network");
-        let steps = build_steps(Mode::Production, 80, 8080, "corp-net");
+        let steps = build_steps(Mode::Production, 80, 8080, "corp-net", DiscordSetup::Off);
         let stack: Vec<&_> = steps
             .iter()
             .filter(|s| s.group == StepGroup::Stack)
