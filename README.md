@@ -31,6 +31,7 @@ The wizard walks through everything the stack needs:
 - clones `wormholesystems-containers` (with submodules) into a directory you choose, or uses the checkout you run it from
 - production (Traefik, automatic SSL) or local test mode (plain HTTP on localhost)
 - asks for domains, contact info and EVE application credentials; generates all secrets (database passwords, Reverb keys, Laravel `APP_KEY`)
+- optionally sets up the Discord integration (account linking, slash commands, map alerts): guides through creating the Discord application, adds the bot as an extra compose service and registers the slash commands
 - in production mode, detects your server's public IP, shows the exact DNS records to create (and why Let's Encrypt needs them), then verifies the domains actually point at the server — with a re-check loop while DNS propagates
 - coexists with what's already on the machine: if the `web` docker network is in use by other containers, the stack can run on a separate network with a name of your choice (a compose override rewires Traefik accordingly)
 - shows a full review before touching anything — every setting, every file it will write, every docker command it will run, in order — and only proceeds after you confirm

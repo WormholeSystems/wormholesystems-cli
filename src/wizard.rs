@@ -74,12 +74,14 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
     };
     let template = fs::read_to_string(repo.join(template_name))
         .with_context(|| format!("cannot read {template_name}"))?;
+    let discord = plan::DiscordSetup::from_answers(&answers);
     let files = plan::build_files(mode, &answers, &template);
     let steps = plan::build_steps(
         mode,
         answers.app_port,
         answers.reverb_port,
         &answers.network,
+        discord,
     );
 
     if !confirm_plan(&repo, mode, &answers, &files, &steps)? {
@@ -99,6 +101,7 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
         answers.app_port,
         answers.reverb_port,
         &answers.network,
+        discord,
     );
 
     if !preflight_buildable(&repo) {
@@ -109,6 +112,7 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
             answers.app_port,
             answers.reverb_port,
             &compose_files,
+            discord,
         );
         return Ok(());
     }
@@ -129,6 +133,7 @@ pub fn run(dir: Option<PathBuf>) -> Result<()> {
             answers.app_port,
             answers.reverb_port,
             &compose_files,
+            discord,
         );
     }
     Ok(())
@@ -155,7 +160,14 @@ pub fn update(dir: Option<PathBuf>) -> Result<()> {
         bail!("the docker daemon is not running — start Docker first");
     }
 
-    let files = plan::compose_files(mode, 80, 8080, plan::DEFAULT_NETWORK);
+    // Only enabled-ness matters for the compose file list; the override
+    // file on disk is how a configured Discord bot manifests here.
+    let discord = if repo.join(plan::DISCORD_OVERRIDE_FILE).is_file() {
+        plan::DiscordSetup::Global
+    } else {
+        plan::DiscordSetup::Off
+    };
+    let files = plan::compose_files(mode, 80, 8080, plan::DEFAULT_NETWORK, discord);
     let compose_hint = std::iter::once("docker compose".to_string())
         .chain(files.iter().map(|f| format!("-f {f}")))
         .collect::<Vec<_>>()
@@ -456,6 +468,17 @@ fn confirm_plan(
         "Database",
         &format!("{} (user: {})", a.db_database, a.db_username),
     );
+    let discord = match &a.discord {
+        None => "not set up (the app works without it)".to_string(),
+        Some(d) if d.test_guild_id.trim().is_empty() => {
+            "bot service + slash commands (registered globally)".to_string()
+        }
+        Some(d) => format!(
+            "bot service + slash commands (registered on guild {})",
+            d.test_guild_id
+        ),
+    };
+    row("Discord", &discord);
 
     println!("\n{}", style("Review — files to write").bold());
     for file in files {
@@ -493,9 +516,20 @@ fn resume_setup(repo: &Path, state: ResumeState) -> Result<()> {
 
 fn execute_remaining(repo: &Path, mut state: ResumeState) -> Result<()> {
     let mode = state.mode;
-    let steps = plan::build_steps(mode, state.app_port, state.reverb_port, &state.network);
-    let compose_files =
-        plan::compose_files(mode, state.app_port, state.reverb_port, &state.network);
+    let steps = plan::build_steps(
+        mode,
+        state.app_port,
+        state.reverb_port,
+        &state.network,
+        state.discord,
+    );
+    let compose_files = plan::compose_files(
+        mode,
+        state.app_port,
+        state.reverb_port,
+        &state.network,
+        state.discord,
+    );
 
     let group: Vec<&Step> = steps
         .iter()
@@ -517,6 +551,7 @@ fn execute_remaining(repo: &Path, mut state: ResumeState) -> Result<()> {
                 state.app_port,
                 state.reverb_port,
                 &compose_files,
+                state.discord,
             );
             return Ok(());
         }
@@ -531,6 +566,7 @@ fn execute_remaining(repo: &Path, mut state: ResumeState) -> Result<()> {
                 state.app_port,
                 state.reverb_port,
                 &compose_files,
+                state.discord,
             );
             return Ok(());
         }
@@ -560,6 +596,7 @@ fn execute_remaining(repo: &Path, mut state: ResumeState) -> Result<()> {
         state.app_port,
         state.reverb_port,
         &compose_files,
+        state.discord,
     );
     if all_done {
         state.delete()?;
@@ -839,6 +876,10 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let app_url = match mode {
+        Mode::Production => format!("https://{app_domain}"),
+        Mode::Local => plan::local_app_url(app_port),
+    };
     println!(
         "\nCreate an application at {} and paste its credentials.\n\
          Configure it as follows:\n  \
@@ -847,11 +888,7 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
          - Scopes (select all {}):\n{scope_list}",
         style("https://developers.eveonline.com/").cyan(),
         style("Authentication & API Access").cyan(),
-        style(match mode {
-            Mode::Production => format!("https://{app_domain}"),
-            Mode::Local => plan::local_app_url(app_port),
-        })
-        .cyan(),
+        style(&app_url).cyan(),
         plan::EsiScope::DEFAULTS.len(),
     );
     let eve_client_id = Text::new("EVE Client ID:")
@@ -870,6 +907,24 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         "keeps your instance private to your corp/alliance — find IDs in zkillboard.com URLs",
     )
     .prompt()?;
+
+    println!(
+        "\nOptional: the Discord integration links Discord accounts, provides slash\n\
+         commands and delivers map alerts. It needs an application at the Discord\n\
+         Developer Portal and runs the bot as an extra container."
+    );
+    let discord = if Confirm::new("Set up the Discord integration?")
+        .with_default(false)
+        .with_help_message(
+            "the app works without it — to add it later, see the Discord section \
+             of the upstream README",
+        )
+        .prompt()?
+    {
+        Some(collect_discord(mode, &app_url)?)
+    } else {
+        None
+    };
 
     println!();
     let db_database = Text::new("Database name:")
@@ -908,6 +963,60 @@ fn collect_answers(mode: Mode) -> Result<Answers> {
         db_username,
         db_password,
         db_root_password,
+        discord,
+    })
+}
+
+/// Walks through the Discord Developer Portal setup the app README
+/// describes and collects the resulting credentials.
+fn collect_discord(mode: Mode, app_url: &str) -> Result<plan::DiscordAnswers> {
+    println!(
+        "\nCreate an application at {} and configure it:\n  \
+         - OAuth2:       add {} as a redirect URL\n  \
+         - Bot:          create (or reset) the bot token\n  \
+         - Installation: enable Guild Install with the `applications.commands` and\n    \
+                         `bot` scopes; grant the bot the View Channels, Send Messages\n    \
+                         and Embed Links permissions\n\
+         Afterwards install the application in the Discord servers where commands\n\
+         and alerts should be available.",
+        style("https://discord.com/developers/applications").cyan(),
+        style(format!("{app_url}/discord/callback")).cyan(),
+    );
+    let application_id = Text::new("Discord Application ID:")
+        .with_validator(required)
+        .with_help_message("General Information → Application ID")
+        .prompt()?;
+    let client_id = Text::new("Discord Client ID:")
+        .with_default(&application_id)
+        .with_help_message("OAuth2 → Client ID, usually the same value as the Application ID")
+        .prompt()?;
+    let client_secret = Password::new("Discord Client Secret:")
+        .with_display_mode(PasswordDisplayMode::Masked)
+        .without_confirmation()
+        .prompt()?;
+    let bot_token = Password::new("Discord Bot Token:")
+        .with_display_mode(PasswordDisplayMode::Masked)
+        .without_confirmation()
+        .prompt()?;
+    let test_guild_id = match mode {
+        Mode::Production => String::new(),
+        Mode::Local => Text::new(
+            "Discord server (guild) ID to register the slash commands on (empty = globally):",
+        )
+        .with_default("")
+        .with_help_message(
+            "guild commands update instantly while global registration can take a while \
+             to propagate — enable developer mode in Discord, then right-click the server \
+             to copy its ID",
+        )
+        .prompt()?,
+    };
+    Ok(plan::DiscordAnswers {
+        application_id,
+        client_id,
+        client_secret,
+        bot_token,
+        test_guild_id,
     })
 }
 
@@ -992,6 +1101,7 @@ fn print_summary(
     app_port: u16,
     reverb_port: u16,
     compose_files: &[String],
+    discord: plan::DiscordSetup,
 ) {
     println!("\n{}", style("Setup complete!").green().bold());
     match mode {
@@ -1012,4 +1122,10 @@ fn print_summary(
          First login: use EVE Online SSO with your EVE character.\n\
          Check services with `{compose} ps`, logs with `{compose} logs -f`."
     );
+    if discord.enabled() {
+        println!(
+            "Discord: the bot runs as the `discord` service; map managers configure\n\
+             alerts on each map's Discord settings page."
+        );
+    }
 }
