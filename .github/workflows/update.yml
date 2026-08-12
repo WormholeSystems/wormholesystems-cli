@@ -1,0 +1,48 @@
+name: Auto-Update Submodules (Scheduled)
+
+on:
+  schedule:
+    # After the containers repo has updated its own submodule at 11:00,
+    # so the daily bump picks up that change too.
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  update-submodules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (including submodules)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - name: Update submodule to upstream HEAD
+        id: update
+        run: |
+          git submodule update --remote upstream/wormholesystems-containers
+          # The nested wormhole-systems submodule follows the commit the
+          # containers repo records, not its own HEAD.
+          git -C upstream/wormholesystems-containers submodule update --init wormhole-systems
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No changes in submodules."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.update.outputs.changed == 'true'
+
+      # A failing run means upstream changed something the wizard relies
+      # on — fix the wizard instead of landing a pin that breaks CI.
+      - name: Run the tests against the new pin
+        if: steps.update.outputs.changed == 'true'
+        run: cargo test
+
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git commit -am "Auto-update submodules"
+          git push
